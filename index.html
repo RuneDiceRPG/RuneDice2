@@ -1,0 +1,829 @@
+<script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, collection, doc, setDoc, getDoc, onSnapshot, addDoc, updateDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Your Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "YOUR_FIREBASE_API_KEY",
+            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT_ID.firebasestorage.app",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = 'runedice-main-app';
+
+        let currentUser = null;
+        let currentScreen = 'home'; 
+        let activeCharacter = null;
+        let currentRoomId = null;
+        let charactersList = [];
+        let savedStoriesList = []; 
+        let roomData = null;
+        let roomUnsubscribe = null;
+        let isAiGenerating = false;
+
+        let showMapPanel = false;
+        let showStatsPanel = false;
+        let showHistoryDrawer = false;
+
+        const apiKey = "YOUR_GEMINI_API_KEY"; // Make sure to paste your Gemini API key here!
+
+        const container = document.getElementById('app-container');
+        const statusEl = document.getElementById('connection-status');
+
+        async function initAuth() {
+            try {
+                await signInAnonymously(auth);
+            } catch (err) {
+                console.error("Auth error:", err);
+            }
+        }
+
+        onAuthStateChanged(auth, (user) => {
+            currentUser = user;
+            if (user) {
+                loadSavedData();
+                render();
+            }
+        });
+
+        initAuth();
+
+        function loadSavedData() {
+            const savedChars = localStorage.getItem('runedice_gh_chars');
+            if (savedChars) {
+                try { 
+                    charactersList = JSON.parse(savedChars); 
+                    if (charactersList.length > 0 && !activeCharacter) {
+                        activeCharacter = charactersList[0];
+                    }
+                } catch(e) { charactersList = []; }
+            }
+
+            const savedStories = localStorage.getItem('runedice_gh_stories');
+            if (savedStories) {
+                try { savedStoriesList = JSON.parse(savedStories); } catch(e) { savedStoriesList = []; }
+            }
+        }
+
+        function saveCharactersLocal() {
+            localStorage.setItem('runedice_gh_chars', JSON.stringify(charactersList));
+        }
+
+        function saveStoriesLocal() {
+            localStorage.setItem('runedice_gh_stories', JSON.stringify(savedStoriesList));
+        }
+
+        function render() {
+            container.innerHTML = '';
+            if (currentScreen === 'home') renderHome();
+            else if (currentScreen === 'create-character') renderCharacterCreation();
+            else if (currentScreen === 'lobby') renderLobby();
+            else if (currentScreen === 'game-room') renderGameRoom();
+        }
+
+        window.showInstallGuide = () => {
+            const modal = document.getElementById('modal-container');
+            const content = document.getElementById('modal-content');
+            content.innerHTML = `
+                <div class="space-y-3 text-center">
+                    <div class="inline-flex p-3 bg-amber-500/20 text-amber-400 rounded-full">
+                        <i class="fa-solid fa-mobile-screen-button text-xl"></i>
+                    </div>
+                    <h3 class="font-bold text-white text-sm">Add RuneDice to Phone Home Screen</h3>
+                    <p class="text-xs text-slate-300 leading-relaxed text-left">
+                        <strong>iOS (Safari):</strong> Tap the <em>Share</em> icon and select <strong>"Add to Home Screen"</strong>.<br><br>
+                        <strong>Android (Chrome):</strong> Tap the menu dots and select <strong>"Install app"</strong> or <strong>"Add to Home screen"</strong>.
+                    </p>
+                    <button id="close-install-modal" class="w-full py-2.5 bg-amber-600 font-bold rounded-lg text-xs text-white">Got It</button>
+                </div>
+            `;
+            modal.classList.remove('hidden');
+            document.getElementById('close-install-modal').onclick = () => modal.classList.add('hidden');
+        };
+
+        function renderHome() {
+            container.innerHTML = `
+                <div class="space-y-3.5 my-auto py-1">
+                    <div class="text-center space-y-1">
+                        <div class="inline-flex p-3 bg-amber-500/10 border border-amber-500/30 rounded-3xl text-amber-400">
+                            <i class="fa-solid fa-dice-d20 text-2xl animate-pulse"></i>
+                        </div>
+                        <h2 class="text-xl font-black text-white tracking-wider">RUNEDICE</h2>
+                        <p class="text-xs text-slate-400">Online Multiplayer AI D&D Campaigns</p>
+                    </div>
+
+                    <div class="space-y-2">
+                        <button id="btn-multiplayer" class="w-full py-3 px-5 bg-gradient-to-r from-amber-600 to-amber-700 active:from-amber-500 font-bold rounded-xl text-white shadow-lg transition active:scale-95 flex items-center justify-center space-x-2 text-xs">
+                            <i class="fa-solid fa-users"></i>
+                            <span>Multiplayer Campaign Lobby</span>
+                        </button>
+                        <button id="btn-create" class="w-full py-2.5 px-5 bg-slate-900 border border-slate-700 active:bg-slate-800 font-bold rounded-xl text-slate-200 transition active:scale-95 flex items-center justify-center space-x-2 text-xs">
+                            <i class="fa-solid fa-user-plus text-amber-400"></i>
+                            <span>Forge New Character Template</span>
+                        </button>
+                    </div>
+
+                    <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 space-y-2 shadow-md">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-[10px] font-bold uppercase tracking-wider text-emerald-400"><i class="fa-solid fa-book-bookmark"></i> Saved Online Stories</h3>
+                            <span class="text-[10px] text-slate-500">${savedStoriesList.length} Saved</span>
+                        </div>
+
+                        ${savedStoriesList.length > 0 ? `
+                            <div class="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                                ${savedStoriesList.map((story, idx) => `
+                                    <div class="bg-slate-950 p-2 rounded-xl border border-slate-800 flex items-center justify-between transition">
+                                        <div class="space-y-0.5 truncate pr-2">
+                                            <p class="font-bold text-xs text-white truncate">${story.title}</p>
+                                            <p class="text-[9px] font-mono text-slate-400">ID: ${story.roomId}</p>
+                                        </div>
+                                        <div class="flex space-x-1 shrink-0">
+                                            <button onclick="window.joinSavedStory('${story.roomId}')" class="text-[10px] bg-emerald-600 active:bg-emerald-500 text-white px-2.5 py-1 rounded font-semibold">Join Online</button>
+                                            <button onclick="window.removeSavedStory(${idx})" class="text-[10px] bg-rose-600/30 active:bg-rose-600 text-rose-300 px-2 py-1 rounded"><i class="fa-solid fa-trash"></i></button>
+                                        </div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        ` : `
+                            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 text-center">
+                                <p class="text-[11px] text-slate-400 italic">No saved stories yet.</p>
+                            </div>
+                        `}
+                    </div>
+
+                    <div class="bg-slate-900/80 border border-slate-800 rounded-2xl p-3 space-y-2 shadow-md">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-[10px] font-bold uppercase tracking-wider text-amber-400"><i class="fa-solid fa-users"></i> Saved Characters</h3>
+                            <span class="text-[10px] text-slate-500">${charactersList.length} Forged</span>
+                        </div>
+
+                        ${charactersList.length > 0 ? `
+                            <div class="space-y-1.5 max-h-32 overflow-y-auto pr-1">
+                                ${charactersList.map((c, idx) => {
+                                    const isActive = activeCharacter && activeCharacter.name === c.name;
+                                    return `
+                                        <div class="bg-slate-950 p-2 rounded-xl border ${isActive ? 'border-amber-500/80 bg-amber-500/5' : 'border-slate-800'} flex items-center justify-between transition">
+                                            <div class="space-y-0.5">
+                                                <div class="flex items-center space-x-1.5">
+                                                    <span class="font-bold text-xs text-white">${c.name}</span>
+                                                    ${isActive ? '<span class="bg-amber-500/20 text-amber-300 text-[9px] px-1 py-0 rounded font-semibold">Active</span>' : ''}
+                                                </div>
+                                                <p class="text-[10px] text-slate-400">Lvl ${c.level} ${c.race} ${c.charClass} • HP ${c.hp}/${c.maxHp}</p>
+                                            </div>
+                                            <div class="flex space-x-1">
+                                                ${!isActive ? `<button onclick="window.setMainActiveChar(${idx})" class="text-[10px] bg-emerald-600 active:bg-emerald-500 text-white px-2.5 py-1 rounded font-semibold">Select</button>` : ''}
+                                                <button onclick="window.deleteMainChar(${idx})" class="text-[10px] bg-rose-600/30 active:bg-rose-600 text-rose-300 px-2 py-1 rounded"><i class="fa-solid fa-trash"></i></button>
+                                            </div>
+                                        </div>
+                                    `;
+                                }).join('')}
+                            </div>
+                        ` : `
+                            <div class="bg-slate-950 p-3 rounded-xl border border-slate-800 text-center">
+                                <p class="text-[11px] text-slate-400 italic">No character selected.</p>
+                            </div>
+                        `}
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('btn-create').onclick = () => { currentScreen = 'create-character'; render(); };
+            document.getElementById('btn-multiplayer').onclick = () => {
+                if (!activeCharacter) {
+                    showNotification("Please select or create a character first!", "error");
+                    currentScreen = 'create-character';
+                    render();
+                    return;
+                }
+                currentScreen = 'lobby';
+                render();
+            };
+        }
+
+        window.setMainActiveChar = (idx) => {
+            activeCharacter = charactersList[idx];
+            showNotification(`Active hero set to ${activeCharacter.name}!`, "success");
+            render();
+        };
+
+        window.deleteMainChar = (idx) => {
+            charactersList.splice(idx, 1);
+            if (activeCharacter && charactersList.length > 0) activeCharacter = charactersList[0];
+            else if (charactersList.length === 0) activeCharacter = null;
+            saveCharactersLocal();
+            render();
+        };
+
+        window.removeSavedStory = (idx) => {
+            savedStoriesList.splice(idx, 1);
+            saveStoriesLocal();
+            render();
+        };
+
+        window.joinSavedStory = async (roomId) => {
+            if (!activeCharacter) {
+                showNotification("Select a character first!", "error");
+                currentScreen = 'home';
+                render();
+                return;
+            }
+            try {
+                const docRef = doc(db, `artifacts/${appId}/public/data/rooms`, roomId);
+                const docSnap = await getDoc(docRef);
+                if (!docSnap.exists()) {
+                    showNotification("Room no longer exists on server!", "error");
+                    return;
+                }
+                const data = docSnap.data();
+                const existingPlayers = data.players || [];
+                if (!existingPlayers.some(p => p.uid === currentUser.uid)) {
+                    existingPlayers.push({ uid: currentUser.uid, char: activeCharacter, ready: true });
+                    data.playerActions = data.playerActions || [];
+                    data.playerActions.push({ sender: 'System', text: `${activeCharacter.name} joined online!`, time: Date.now() });
+                    await updateDoc(docRef, { players: existingPlayers, playerActions: data.playerActions });
+                }
+                currentRoomId = roomId;
+                currentScreen = 'game-room';
+                listenToRoom();
+                render();
+            } catch(e) {
+                console.error(e);
+                showNotification("Failed to join online campaign.", "error");
+            }
+        };
+
+        let newChar = {
+            name: 'Kaelen',
+            race: 'Elf',
+            charClass: 'Ranger',
+            level: 1,
+            hp: 12,
+            maxHp: 12,
+            str: 12,
+            dex: 16,
+            con: 13,
+            int: 10,
+            wis: 15,
+            cha: 10,
+            inventory: ['Longbow', 'Shortsword', 'Explorer Pack', 'Potion of Healing']
+        };
+
+        function renderCharacterCreation() {
+            container.innerHTML = `
+                <div class="space-y-3 pb-4">
+                    <div class="flex items-center justify-between">
+                        <button id="back-home" class="text-slate-400 active:text-white px-2 py-1 text-xs"><i class="fa-solid fa-arrow-left"></i> Back</button>
+                        <h2 class="text-sm font-bold text-amber-400">Forge Character</h2>
+                        <div class="w-10"></div>
+                    </div>
+
+                    <div class="space-y-2.5 bg-slate-900 p-3 rounded-xl border border-slate-800">
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-400 mb-1">Character Name</label>
+                            <input type="text" id="char-name" value="${newChar.name}" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2.5 text-white text-xs focus:outline-none focus:border-amber-500">
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <label class="block text-[10px] font-semibold text-slate-400 mb-1">Race</label>
+                                <select id="char-race" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-amber-500">
+                                    ${['Human', 'Elf', 'Dwarf', 'Half-Elf', 'Halfling'].map(r => `<option ${newChar.race === r ? 'selected' : ''}>${r}</option>`).join('')}
+                                </select>
+                            </div>
+                            <div>
+                                <label class="block text-[10px] font-semibold text-slate-400 mb-1">Class</label>
+                                <select id="char-class" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-amber-500">
+                                    ${['Fighter', 'Wizard', 'Rogue', 'Cleric', 'Ranger'].map(c => `<option ${newChar.charClass === c ? 'selected' : ''}>${c}</option>`).join('')}
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 p-3 rounded-xl border border-slate-800 space-y-2">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-[10px] font-bold uppercase tracking-wider text-amber-500">Attributes & Stats</h3>
+                            <button id="roll-stats" class="text-[10px] bg-amber-500/20 text-amber-400 active:bg-amber-500/30 px-2.5 py-1 rounded-md font-semibold transition"><i class="fa-solid fa-dice"></i> Reroll</button>
+                        </div>
+                        <div class="grid grid-cols-3 gap-1.5 text-center" id="stats-grid">
+                            ${renderStatBox('STR', newChar.str)}
+                            ${renderStatBox('DEX', newChar.dex)}
+                            ${renderStatBox('CON', newChar.con)}
+                            ${renderStatBox('INT', newChar.int)}
+                            ${renderStatBox('WIS', newChar.wis)}
+                            ${renderStatBox('CHA', newChar.cha)}
+                        </div>
+                    </div>
+
+                    <button id="save-char" class="w-full py-3 bg-amber-600 active:bg-amber-500 font-bold rounded-xl text-white text-xs shadow-lg transition active:scale-95">
+                        Save & Return to Home
+                    </button>
+                </div>
+            `;
+
+            document.getElementById('back-home').onclick = () => { currentScreen = 'home'; render(); };
+            document.getElementById('char-name').oninput = (e) => newChar.name = e.target.value;
+            document.getElementById('char-race').onchange = (e) => newChar.race = e.target.value;
+            document.getElementById('char-class').onchange = (e) => newChar.charClass = e.target.value;
+
+            document.getElementById('roll-stats').onclick = () => {
+                newChar.str = Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + 3;
+                newChar.dex = Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + 3;
+                newChar.con = Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + 3;
+                newChar.int = Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + 3;
+                newChar.wis = Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + 3;
+                newChar.cha = Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + Math.floor(Math.random() * 6) + 3;
+                newChar.hp = 10 + Math.floor((newChar.con - 10) / 2);
+                newChar.maxHp = newChar.hp;
+                renderCharacterCreation();
+            };
+
+            document.getElementById('save-char').onclick = () => {
+                activeCharacter = {...newChar};
+                charactersList.push(activeCharacter);
+                saveCharactersLocal();
+                showNotification(`Character ${activeCharacter.name} forged!`, "success");
+                currentScreen = 'home';
+                render();
+            };
+        }
+
+        function renderStatBox(label, val) {
+            const mod = Math.floor((val - 10) / 2);
+            const modStr = mod >= 0 ? `+${mod}` : `${mod}`;
+            return `
+                <div class="bg-slate-950 p-2 rounded-lg border border-slate-800">
+                    <span class="text-[9px] uppercase font-bold text-slate-400 block">${label}</span>
+                    <span class="text-sm font-extrabold text-white">${val}</span>
+                    <span class="text-[10px] text-amber-400 block font-semibold">${modStr}</span>
+                </div>
+            `;
+        }
+
+        function renderLobby() {
+            container.innerHTML = `
+                <div class="space-y-3 pb-4">
+                    <div class="flex items-center justify-between">
+                        <button id="back-home-lobby" class="text-slate-400 active:text-white px-2 py-1 text-xs"><i class="fa-solid fa-arrow-left"></i> Back</button>
+                        <h2 class="text-sm font-bold text-amber-400">Multiplayer Lobby</h2>
+                        <div class="w-10"></div>
+                    </div>
+
+                    <div class="bg-slate-900 p-3.5 rounded-xl border border-amber-500/40 space-y-2.5 shadow-lg">
+                        <div class="flex items-center space-x-2">
+                            <i class="fa-solid fa-wand-magic-sparkles text-amber-400 text-xs"></i>
+                            <h3 class="text-[11px] font-bold uppercase tracking-wider text-amber-400">Host Online Campaign</h3>
+                        </div>
+                        <p class="text-[10px] text-slate-400">Describe your world for online players to join via Room ID:</p>
+                        <textarea id="custom-story-prompt" rows="2" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-amber-500" placeholder="e.g. A cyberpunk wizard academy floating in the clouds..."></textarea>
+                        
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-400 mb-1">Campaign Title</label>
+                            <input type="text" id="room-name-input" value="RuneDice Online Quest" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-amber-500">
+                        </div>
+
+                        <button id="create-room-btn" class="w-full py-3 bg-gradient-to-r from-amber-600 to-amber-700 font-bold rounded-xl text-white text-xs shadow transition active:scale-95 flex items-center justify-center space-x-2">
+                            <i class="fa-solid fa-sparkles"></i>
+                            <span>Host Online Room</span>
+                        </button>
+                    </div>
+
+                    <div class="bg-slate-900 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+                        <h3 class="text-[11px] font-bold uppercase tracking-wider text-indigo-400">Join Online Campaign</h3>
+                        <div>
+                            <label class="block text-[10px] font-semibold text-slate-400 mb-1">Room Code / ID</label>
+                            <input type="text" id="room-code-input" placeholder="Paste room ID here..." class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-white text-xs focus:outline-none focus:border-amber-500">
+                        </div>
+                        <button id="join-room-btn" class="w-full py-3 bg-indigo-600 active:bg-indigo-500 font-bold rounded-xl text-white text-xs shadow transition active:scale-95">
+                            Join Online
+                        </button>
+                    </div>
+                </div>
+            `;
+
+            document.getElementById('back-home-lobby').onclick = () => { currentScreen = 'home'; render(); };
+
+            document.getElementById('create-room-btn').onclick = async () => {
+                if (!currentUser) return;
+                const rName = document.getElementById('room-name-input').value || 'RuneDice Online Quest';
+                const userPrompt = document.getElementById('custom-story-prompt').value.trim() || 'A multiplayer fantasy adventure online.';
+                
+                showNotification("Creating online room...", "success");
+                
+                const openingPrompt = `You are an expert Dungeon Master running an online multiplayer D&D campaign titled "${rName}". Premise: "${userPrompt}". The active player character is ${activeCharacter.name} (${activeCharacter.race} ${activeCharacter.charClass}). Write an immersive opening narration (3 sentences) prompting their first action. Include a bracketed room tag like [New Room Name: Online Tavern].`;
+                
+                let openingNarration = `Welcome to online multiplayer ${rName}. Other players can join using your Room ID. What do you do?`;
+                let startingRoomName = 'Online Tavern';
+                
+                try {
+                    const aiText = await callGeminiAI(openingPrompt);
+                    if (aiText) {
+                        openingNarration = aiText;
+                        const match = aiText.match(/\[New Room Name:\s*([^\]]+)\]/i) || aiText.match(/\[Room:\s*([^\]]+)\]/i);
+                        if (match) startingRoomName = match[1].trim();
+                    }
+                } catch(e) { console.error(e); }
+
+                const initialMap = [
+                    { id: 'room-0', name: startingRoomName, x: 0, y: 0, explored: true, active: true, type: 'start' }
+                ];
+
+                try {
+                    const roomRef = await addDoc(collection(db, `artifacts/${appId}/public/data/rooms`), {
+                        name: rName,
+                        host: currentUser.uid,
+                        status: 'active',
+                        createdAt: Date.now(),
+                        customPrompt: userPrompt,
+                        dungeonMap: initialMap,
+                        dungeonLog: [{ sender: 'RuneDice DM', text: openingNarration, time: Date.now() }],
+                        playerActions: [{ sender: 'System', text: `${activeCharacter.name} hosted the online room.`, time: Date.now() }],
+                        players: [
+                            { uid: currentUser.uid, char: activeCharacter, ready: true }
+                        ]
+                    });
+
+                    currentRoomId = roomRef.id;
+
+                    if (!savedStoriesList.some(s => s.roomId === currentRoomId)) {
+                        savedStoriesList.unshift({ roomId: currentRoomId, title: rName });
+                        saveStoriesLocal();
+                    }
+
+                    currentScreen = 'game-room';
+                    listenToRoom();
+                    render();
+                } catch(e) {
+                    console.error(e);
+                    showNotification("Failed to create online room.", "error");
+                }
+            };
+
+            document.getElementById('join-room-btn').onclick = async () => {
+                const rId = document.getElementById('room-code-input').value.trim();
+                if (!rId) { showNotification("Enter a valid Room ID", "error"); return; }
+                try {
+                    const docRef = doc(db, `artifacts/${appId}/public/data/rooms`, rId);
+                    const docSnap = await getDoc(docRef);
+                    if (!docSnap.exists()) {
+                        showNotification("Room not found online!", "error");
+                        return;
+                    }
+                    const data = docSnap.data();
+                    const existingPlayers = data.players || [];
+                    if (!existingPlayers.some(p => p.uid === currentUser.uid)) {
+                        existingPlayers.push({ uid: currentUser.uid, char: activeCharacter, ready: true });
+                        data.playerActions = data.playerActions || [];
+                        data.playerActions.push({ sender: 'System', text: `${activeCharacter.name} joined online!`, time: Date.now() });
+                        await updateDoc(docRef, { players: existingPlayers, playerActions: data.playerActions });
+                    }
+
+                    currentRoomId = rId;
+
+                    if (!savedStoriesList.some(s => s.roomId === currentRoomId)) {
+                        savedStoriesList.unshift({ roomId: currentRoomId, title: data.name || 'Shared Online Campaign' });
+                        saveStoriesLocal();
+                    }
+
+                    currentScreen = 'game-room';
+                    listenToRoom();
+                    render();
+                } catch(e) {
+                    console.error(e);
+                    showNotification("Failed to join online room.", "error");
+                }
+            };
+        }
+
+        async function callGeminiAI(promptText) {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+            const payload = {
+                contents: [{ parts: [{ text: promptText }] }],
+                systemInstruction: { parts: [{ text: "You are RuneDice, an immersive AI Dungeon Master for online multiplayer. Keep responses concise (under 3 sentences). Whenever players progress, describe the new room and output a bracketed room tag like [New Room Name: Corridor]." }] }
+            };
+
+            let delay = 1000;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                    const result = await response.json();
+                    return result.candidates?.[0]?.content?.parts?.[0]?.text || "The online realm shifts...";
+                } catch (err) {
+                    if (attempt === 4) throw err;
+                    await new Promise(res => setTimeout(res, delay));
+                    delay *= 2;
+                }
+            }
+            return "Online connection unstable...";
+        }
+
+        function listenToRoom() {
+            if (roomUnsubscribe) roomUnsubscribe();
+            const docRef = doc(db, `artifacts/${appId}/public/data/rooms`, currentRoomId);
+            roomUnsubscribe = onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    roomData = docSnap.data();
+                    if (currentScreen === 'game-room') renderGameRoomContent();
+                }
+            }, (err) => {
+                console.error("Room sync error:", err);
+            });
+        }
+
+        function renderGameRoom() {
+            container.innerHTML = `
+                <div id="game-room-wrapper" class="space-y-3 pb-2 flex-1 flex flex-col justify-between relative">
+                    <!-- Dynamic Content Loaded Below -->
+                </div>
+            `;
+            renderGameRoomContent();
+        }
+
+        function renderGameRoomContent() {
+            const wrapper = document.getElementById('game-room-wrapper');
+            if (!wrapper || !roomData) return;
+
+            const mapGrid = roomData.dungeonMap || [];
+            const activeRoom = mapGrid.find(r => r.active) || mapGrid[0];
+            const dmLog = roomData.dungeonLog || [];
+            const latestDmText = dmLog.length > 0 ? dmLog[dmLog.length - 1].text : "Awaiting the RuneDice Master...";
+
+            wrapper.innerHTML = `
+                <div class="space-y-2.5 relative">
+                    <div class="flex items-center justify-between">
+                        <button id="leave-room" class="text-[11px] bg-slate-800 active:bg-slate-700 text-slate-300 px-2.5 py-1.5 rounded-lg"><i class="fa-solid fa-door-open"></i> Home</button>
+                        
+                        <div class="flex space-x-1">
+                            <button id="toggle-history-btn" class="text-[11px] px-2.5 py-1.5 rounded-lg font-bold border transition ${showHistoryDrawer ? 'bg-amber-600 text-white border-amber-500' : 'bg-slate-900 text-amber-400 border-slate-700'}">
+                                <i class="fa-solid fa-scroll"></i> History
+                            </button>
+                            <button id="toggle-map-btn" class="text-[11px] px-2 py-1.5 rounded-lg font-bold border transition ${showMapPanel ? 'bg-emerald-600 text-white border-emerald-500' : 'bg-slate-900 text-emerald-400 border-slate-700'}">
+                                <i class="fa-solid fa-map"></i> Map
+                            </button>
+                            <button id="toggle-stats-btn" class="text-[11px] px-2 py-1.5 rounded-lg font-bold border transition ${showStatsPanel ? 'bg-indigo-600 text-white border-indigo-500' : 'bg-slate-900 text-indigo-400 border-slate-700'}">
+                                <i class="fa-solid fa-shield-halved"></i> Party (${roomData.players.length})
+                            </button>
+                        </div>
+
+                        <button id="share-id" class="text-[11px] bg-amber-500/20 text-amber-400 px-2.5 py-1.5 rounded-lg"><i class="fa-solid fa-share-nodes"></i></button>
+                    </div>
+
+                    <div id="history-drawer" class="absolute inset-x-0 top-10 z-40 bg-slate-900/98 backdrop-blur-md p-3 rounded-2xl border border-amber-500/40 shadow-2xl space-y-2.5 ${showHistoryDrawer ? '' : 'hidden'}">
+                        <div class="flex justify-between items-center border-b border-slate-800 pb-1.5">
+                            <h3 class="text-xs font-bold uppercase tracking-wider text-amber-400"><i class="fa-solid fa-book-open"></i> RuneDice Lore Archive</h3>
+                            <button id="close-history-btn" class="text-slate-400 active:text-white px-2 py-0.5 text-xs bg-slate-800 rounded"><i class="fa-solid fa-xmark"></i> Close</button>
+                        </div>
+                        <div class="max-h-52 overflow-y-auto space-y-2 pr-1 text-xs font-mono">
+                            ${dmLog.slice().reverse().map((entry, idx) => `
+                                <div class="bg-slate-950 p-2 rounded-xl border border-slate-800 space-y-1">
+                                    <span class="text-[9px] text-amber-400 block">${new Date(entry.time).toLocaleTimeString()} • Entry #${dmLog.length - idx}</span>
+                                    <p class="text-slate-200 leading-relaxed text-[11px]">${entry.text}</p>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div id="map-panel" class="bg-slate-900 p-2.5 rounded-xl border border-slate-800 space-y-1.5 ${showMapPanel ? '' : 'hidden'}">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-[10px] font-bold uppercase tracking-wider text-emerald-400"><i class="fa-solid fa-compass"></i> Online Explored Map</h3>
+                            <span class="text-[10px] text-slate-400 truncate max-w-[150px]">Current: ${activeRoom.name}</span>
+                        </div>
+                        <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800/80 flex flex-wrap gap-1.5 items-center justify-center max-h-28 overflow-y-auto">
+                            ${mapGrid.map(room => `
+                                <button onclick="window.selectRoom('${room.id}')" class="px-2.5 py-1.5 rounded-lg border flex items-center space-x-1.5 transition ${room.active ? 'bg-amber-500/20 border-amber-500 text-amber-300 ring-1 ring-amber-500/40' : 'bg-slate-900 border-slate-700 text-slate-300'}">
+                                    <i class="fa-solid ${room.type === 'boss' ? 'fa-skull' : room.type === 'treasure' ? 'fa-gem' : room.type === 'combat' ? 'fa-khanda' : 'fa-door-open'} text-[10px]"></i>
+                                    <span class="text-[11px] font-semibold">${room.name}</span>
+                                </button>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div id="stats-panel" class="bg-slate-900 p-2.5 rounded-xl border border-slate-800 space-y-1.5 ${showStatsPanel ? '' : 'hidden'}">
+                        <h3 class="text-[10px] font-bold uppercase tracking-wider text-indigo-400"><i class="fa-solid fa-shield-halved"></i> Online Party Members</h3>
+                        <div class="space-y-1.5 max-h-28 overflow-y-auto pr-1">
+                            ${roomData.players.map(p => `
+                                <div class="bg-slate-950 p-2 rounded-lg border border-slate-800 space-y-1">
+                                    <div class="flex justify-between items-center">
+                                        <span class="font-bold text-[11px] text-white">${p.char.name} <span class="text-[9px] text-slate-400 font-normal">(${p.char.race} ${p.char.charClass})</span></span>
+                                        <span class="text-[10px] text-emerald-400 font-mono font-bold">HP: ${p.char.hp}/${p.char.maxHp}</span>
+                                    </div>
+                                    <div class="flex flex-wrap gap-1 pt-0.5 border-t border-slate-900">
+                                        <span class="text-[9px] bg-slate-900 text-amber-400 px-1 py-0.5 rounded border border-slate-800 font-mono">STR ${p.char.str}</span>
+                                        <span class="text-[9px] bg-slate-900 text-amber-400 px-1 py-0.5 rounded border border-slate-800 font-mono">DEX ${p.char.dex}</span>
+                                        <span class="text-[9px] bg-slate-900 text-amber-400 px-1 py-0.5 rounded border border-slate-800 font-mono">INT ${p.char.int}</span>
+                                        ${(p.char.inventory || []).map(item => `
+                                            <span class="text-[9px] bg-indigo-950/60 text-indigo-300 px-1 py-0.5 rounded border border-indigo-900/50">${item}</span>
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 p-2.5 rounded-xl border border-slate-800 space-y-1 shadow-md">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-[10px] font-bold uppercase tracking-wider text-amber-400"><i class="fa-solid fa-wand-magic-sparkles"></i> RuneDice Master Narration</h3>
+                            <span class="text-[9px] bg-amber-500/10 text-amber-300 px-2 py-0.5 rounded-full">Live Sync</span>
+                        </div>
+                        <div class="bg-slate-950 p-2.5 rounded-lg border border-slate-800/80 text-xs font-mono text-slate-200 leading-relaxed min-h-[60px] max-h-28 overflow-y-auto">
+                            ${latestDmText}
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 p-2.5 rounded-xl border border-slate-800 space-y-1 shadow-md">
+                        <div class="flex justify-between items-center">
+                            <h3 class="text-[10px] font-bold uppercase tracking-wider text-indigo-400"><i class="fa-solid fa-users-rectangle"></i> Online Actions Log</h3>
+                            <span class="text-[9px] text-slate-500">Synced</span>
+                        </div>
+                        <div id="player-log-box" class="bg-slate-950 p-2 rounded-lg border border-slate-800/80 text-xs font-mono space-y-1.5 h-20 overflow-y-auto">
+                            ${(roomData.playerActions || []).map(pa => `
+                                <div class="border-l-2 border-indigo-500 pl-2 py-0.5 text-slate-300 text-[11px]">
+                                    <span class="text-[9px] text-indigo-400 font-bold block">${pa.sender}</span>
+                                    ${pa.text}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+
+                    <div class="bg-slate-900 p-2 rounded-xl border border-slate-800 space-y-1">
+                        <span class="text-[9px] font-bold uppercase tracking-wider text-slate-400 block px-1"><i class="fa-solid fa-bolt text-amber-400"></i> Quick Story Actions</span>
+                        <div class="grid grid-cols-2 gap-1.5">
+                            <button onclick="window.sendQuickAction('Search the surrounding area thoroughly for hidden items or secret doors.')" class="text-left text-[11px] bg-slate-950 active:bg-slate-800 border border-slate-800 p-2 rounded-lg text-slate-300 transition truncate">
+                                <i class="fa-solid fa-magnifying-glass text-amber-400 mr-1"></i> Search Area
+                            </button>
+                            <button onclick="window.sendQuickAction('Inspect doorways and runes for traps or magical wards.')" class="text-left text-[11px] bg-slate-950 active:bg-slate-800 border border-slate-800 p-2 rounded-lg text-slate-300 transition truncate">
+                                <i class="fa-solid fa-shield-cat text-indigo-400 mr-1"></i> Check Traps
+                            </button>
+                            <button onclick="window.sendQuickAction('Draw weapon and cautiously advance deeper into the chambers.')" class="text-left text-[11px] bg-slate-950 active:bg-slate-800 border border-slate-800 p-2 rounded-lg text-slate-300 transition truncate">
+                                <i class="fa-solid fa-khanda text-emerald-400 mr-1"></i> Advance Forward
+                            </button>
+                            <button onclick="window.sendQuickAction('Cast a light spell or use a torch to illuminate dark corners.')" class="text-left text-[11px] bg-slate-950 active:bg-slate-800 border border-slate-800 p-2 rounded-lg text-slate-300 transition truncate">
+                                <i class="fa-solid fa-fire text-amber-500 mr-1"></i> Illuminate Room
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="space-y-1 pt-1 shrink-0">
+                    <form id="action-form" class="flex gap-1.5">
+                        <input type="text" id="player-action-input" placeholder="${isAiGenerating ? 'RuneDice AI is responding...' : 'What do you do?'}" ${isAiGenerating ? 'disabled' : ''} class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white focus:outline-none focus:border-amber-500 disabled:opacity-50">
+                        <button type="submit" id="submit-action-btn" ${isAiGenerating ? 'disabled' : ''} class="bg-amber-600 active:bg-amber-500 px-4 py-2.5 rounded-xl font-bold text-white text-xs shadow transition active:scale-95 disabled:opacity-50">
+                            <i class="fa-solid fa-paper-plane"></i>
+                        </button>
+                    </form>
+                </div>
+            `;
+
+            document.getElementById('toggle-history-btn').onclick = () => {
+                showHistoryDrawer = !showHistoryDrawer;
+                showMapPanel = false;
+                showStatsPanel = false;
+                renderGameRoomContent();
+            };
+
+            const closeHistoryBtn = document.getElementById('close-history-btn');
+            if (closeHistoryBtn) {
+                closeHistoryBtn.onclick = () => {
+                    showHistoryDrawer = false;
+                    renderGameRoomContent();
+                };
+            }
+
+            document.getElementById('toggle-map-btn').onclick = () => {
+                showMapPanel = !showMapPanel;
+                showHistoryDrawer = false;
+                showStatsPanel = false;
+                renderGameRoomContent();
+            };
+
+            document.getElementById('toggle-stats-btn').onclick = () => {
+                showStatsPanel = !showStatsPanel;
+                showHistoryDrawer = false;
+                showMapPanel = false;
+                renderGameRoomContent();
+            };
+
+            document.getElementById('leave-room').onclick = () => {
+                if (roomUnsubscribe) roomUnsubscribe();
+                currentRoomId = null;
+                currentScreen = 'home';
+                render();
+            };
+
+            document.getElementById('share-id').onclick = () => {
+                navigator.clipboard.writeText(currentRoomId);
+                showNotification("Room ID copied to clipboard!", "success");
+            };
+
+            document.getElementById('action-form').onsubmit = async (e) => {
+                e.preventDefault();
+                const inputEl = document.getElementById('player-action-input');
+                const actionText = inputEl.value.trim();
+                if (!actionText || isAiGenerating) return;
+                await processAction(actionText);
+            };
+
+            const playerLogBox = document.getElementById('player-log-box');
+            if (playerLogBox) playerLogBox.scrollTop = playerLogBox.scrollHeight;
+        }
+
+        window.sendQuickAction = async (actionText) => {
+            if (isAiGenerating) return;
+            await processAction(actionText);
+        };
+
+        async function processAction(actionText) {
+            isAiGenerating = true;
+            renderGameRoomContent();
+
+            try {
+                const mapGrid = roomData.dungeonMap || [];
+                const activeRoom = mapGrid.find(r => r.active) || mapGrid[0];
+                const customPremise = roomData.customPrompt || 'Standard online fantasy adventure';
+
+                const existingPlayerActions = roomData.playerActions || [];
+                const updatedPlayerActions = [...existingPlayerActions, { sender: activeCharacter.name, text: actionText, time: Date.now() }];
+                
+                const docRef = doc(db, `artifacts/${appId}/public/data/rooms`, currentRoomId);
+                await updateDoc(docRef, { playerActions: updatedPlayerActions });
+
+                const historyContext = updatedPlayerActions.slice(-4).map(l => `${l.sender}: ${l.text}`).join('\n');
+                const prompt = `Campaign Premise: ${customPremise}\nCurrent Room: ${activeRoom.name}\nAction by ${activeCharacter.name}: "${actionText}"\nRecent history:\n${historyContext}\n\nDescribe the outcome as RuneDice Dungeon Master. If this action explores a new area or room, name the new room clearly in brackets like [New Room Name: Hall of Runes] so it can be generated.`;
+
+                const aiNarrative = await callGeminiAI(prompt);
+
+                let updatedMap = [...mapGrid];
+                const roomMatch = aiNarrative.match(/\[New Room Name:\s*([^\]]+)\]/i) || aiNarrative.match(/\[Room:\s*([^\]]+)\]/i);
+                
+                if (roomMatch) {
+                    const newRoomName = roomMatch[1].trim();
+                    if (!updatedMap.some(r => r.name.toLowerCase() === newRoomName.toLowerCase())) {
+                        const newId = `room-${updatedMap.length}`;
+                        let rType = 'explore';
+                        const lower = newRoomName.toLowerCase();
+                        if (lower.includes('crypt') || lower.includes('boss') || lower.includes('lair') || lower.includes('sanctum')) rType = 'boss';
+                        else if (lower.includes('vault') || lower.includes('treasure') || lower.includes('chest')) rType = 'treasure';
+                        else if (lower.includes('guard') || lower.includes('hall') || lower.includes('chamber') || lower.includes('arena')) rType = 'combat';
+
+                        updatedMap = updatedMap.map(r => ({ ...r, active: false }));
+                        updatedMap.push({ id: newId, name: newRoomName, x: updatedMap.length, y: 0, explored: true, active: true, type: rType });
+                    }
+                }
+
+                const existingDmLog = roomData.dungeonLog || [];
+                const updatedDmLog = [...existingDmLog, { sender: 'RuneDice DM', text: aiNarrative, time: Date.now() }];
+                await updateDoc(docRef, { dungeonLog: updatedDmLog, dungeonMap: updatedMap });
+            } catch (err) {
+                console.error(err);
+                showNotification("Failed to communicate with RuneDice AI.", "error");
+            } finally {
+                isAiGenerating = false;
+                renderGameRoomContent();
+            }
+        }
+
+        window.selectRoom = async (roomId) => {
+            if (!roomData) return;
+            const updatedMap = roomData.dungeonMap.map(r => ({
+                ...r,
+                active: r.id === roomId
+            }));
+
+            const target = updatedMap.find(r => r.id === roomId);
+            const moveMsg = `${activeCharacter.name} returned to the ${target.name}.`;
+            const updatedPlayerActions = [...(roomData.playerActions || []), { sender: 'System', text: moveMsg, time: Date.now() }];
+
+            try {
+                const docRef = doc(db, `artifacts/${appId}/public/data/rooms`, currentRoomId);
+                await updateDoc(docRef, { dungeonMap: updatedMap, playerActions: updatedPlayerActions });
+            } catch(e) { console.error(e); }
+        };
+
+        function showNotification(msg, type='success') {
+            const modal = document.getElementById('modal-container');
+            const content = document.getElementById('modal-content');
+            
+            content.innerHTML = `
+                <div class="text-center space-y-3">
+                    <div class="inline-flex p-3 rounded-full ${type === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'}">
+                        <i class="fa-solid ${type === 'success' ? 'fa-check' : 'fa-triangle-exclamation'} text-xl"></i>
+                    </div>
+                    <p class="font-bold text-white text-sm">${msg}</p>
+                    <button id="close-modal" class="w-full py-2.5 bg-slate-800 active:bg-slate-700 font-bold rounded-lg text-xs text-white">OK</button>
+                </div>
+            `;
+            modal.classList.remove('hidden');
+            document.getElementById('close-modal').onclick = () => modal.classList.add('hidden');
+        }
+    </script>
